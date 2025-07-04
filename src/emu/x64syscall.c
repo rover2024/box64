@@ -439,6 +439,10 @@ static int clone_fn(void* arg)
     _exit(ret);
 }
 
+#define LOREUSER_SYSCALL_NUM 114514
+
+static uint64_t Lore_HandleMagicCall(uint64_t arg1, uint64_t arg2, uint64_t arg3);
+
 void EXPORT x64Syscall(x64emu_t *emu)
 {
     RESET_FLAGS(emu);
@@ -876,6 +880,10 @@ void EXPORT x64Syscall(x64emu_t *emu)
             S_RAX = -ENOSYS;
             #endif
             break;
+        case LOREUSER_SYSCALL_NUM: {
+            R_RAX = Lore_HandleMagicCall(R_RDI, R_RSI, R_RDX);
+            break;
+        }
         default:
             printf_log(LOG_INFO, "Warning: Unsupported Syscall 0x%02Xh (%d)\n", s, s);
             S_RAX = -ENOSYS;
@@ -1170,4 +1178,343 @@ long EXPORT my_syscall(x64emu_t *emu)
             return -1;
     }
     return 0;
+}
+
+// =================================================================================
+// lorelei/lorehapi.h
+
+#include <dlfcn.h>
+#include <link.h>
+#include <limits.h>
+
+typedef void      (*FP_ExecuteCallback)(void * /*thunk*/, void * /*callback*/, void * /*args*/, void * /*ret*/, void * /*metadata*/);
+typedef pthread_t (*FP_GetLastPThreadId)(void);
+typedef void      (*FP_NotifyPThreadCreate)(pthread_t * /*thread*/, const pthread_attr_t * /*attr*/, void *(*) (void *) /*start_routine*/, void * /*arg*/, int * /*ret*/);
+typedef void      (*FP_NotifyPThreadExit)(void * /*ret*/);
+typedef void      (*FP_NotifyHostLibraryOpen)(const char * /*identifier*/);
+
+struct LoreEmuApis {
+    // Executes guest callback
+    FP_ExecuteCallback ExecuteCallback;
+
+    // Get last pthread id
+    FP_GetLastPThreadId GetLastPThreadId;
+
+    // Notify emulator to create thread in guest environment
+    FP_NotifyPThreadCreate NotifyPThreadCreate;
+
+    // Notify emulator to exit thread in guest environment
+    FP_NotifyPThreadExit NotifyPThreadExit;
+
+    // Notify guest runtime to load GTL
+    FP_NotifyHostLibraryOpen NotifyHostLibraryOpen;
+};
+
+typedef struct LoreEmuApis *(*FP_HrtGetEmuApis)(void);
+typedef void                (*FP_HandleExtraGuestCall)(int /*type*/, void ** /*args*/, void * /*ret*/);
+
+struct LORE_EMU_CONTEXT {
+    void *LibraryHandle;
+
+    FP_HrtGetEmuApis HrtGetEmuApis;
+    FP_HandleExtraGuestCall HandleExtraGuestCall;
+};
+
+static struct LORE_EMU_CONTEXT LoreEmuContext = {};
+
+// static __thread union LOREUSER_PROC_NEXTCALL *LoreThreadNextCallList[1024];
+
+// static __thread int LoreThreadNextCallCount = 0;
+
+// __thread struct LORE_HOST_THREAD_CONTEXT LoreHostThreadContext;
+
+__thread uint64_t LoreTicks = 0;
+
+__thread uint64_t LoreLastTick = 0;
+
+__thread uint64_t LoreTotalTicks = 0;
+
+// =================================================================================
+
+
+// =================================================================================
+// lorelei/loreuser.h
+
+enum LOREUSER_CALL_TYPE {
+    LOREUSER_CT_CheckHealth,
+
+    LOREUSER_CT_LoadLibrary,
+    LOREUSER_CT_FreeLibrary,
+    LOREUSER_CT_GetProcAddress,
+    LOREUSER_CT_GetErrorMessage,
+    LOREUSER_CT_GetModulePath,
+    LOREUSER_CT_GetAddressBoundary,
+
+    LOREUSER_CT_InvokeHostProc,
+    LOREUSER_CT_ResumeHostProc, // internal
+
+    LOREUSER_CT_GetLibraryData,
+    LOREUSER_CT_CallHostHelper,
+
+    // internal
+    LOREUSER_CT_LA_ObjOpen,
+    LOREUSER_CT_LA_ObjClose,
+    LOREUSER_CT_LA_PreInit,
+    LOREUSER_CT_LA_SymBind,
+};
+
+enum LOREUSER_PROC_RESULT {
+    LOREUSER_PR_Finished = 0,
+    LOREUSER_PR_Callback,
+    LOREUSER_PR_PThreadCreate,
+    LOREUSER_PR_PThreadExit,
+    LOREUSER_PR_HostLibraryOpen,
+};
+
+enum LOREUSER_PROC_CONVENTION {
+    LOREUSER_PC_Function,
+    LOREUSER_PC_ThreadEntry,
+    LOREUSER_PC_HostCallback,
+};
+
+enum LOREUESR_HELPER_ID {
+    LOREUSER_HI_ExtractPrintFArgs = 1,
+    LOREUSER_HI_ExtractSScanFArgs,
+};
+
+union LOREUSER_PROC_NEXTCALL {
+    // LOREUSER_PR_Callback
+    struct {
+        void *thunk;
+        void *callback;
+        void *args;
+        void *ret;
+        void *metadata;
+    } callback;
+
+    // LOREUSER_PR_PThreadCreate
+    struct {
+        void *thread;
+        void *attr;
+        void *start_routine;
+        void *arg;
+        int *ret;
+    } pthread_create;
+
+    // LOREUSER_PR_PThreadExit
+    struct {
+        void *ret;
+    } pthread_exit;
+
+    // LOREUSER_PR_HostLibraryOpen
+    struct {
+        const char *id;
+    } host_library_open;
+};
+
+// =================================================================================
+
+uint64_t rdtsc(void) {
+#ifdef __x86_64__
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+#elif defined(__aarch64__)
+    uint64_t val;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(val));
+    return val;
+#elif defined(__riscv)
+    uint64_t cycles;
+    __asm__ __volatile__("rdcycle %0" : "=r"(cycles));
+    return cycles;
+#else
+#error "Unsupported architecture"
+#endif
+}
+
+static uint64_t Lore_HandleMagicCall(uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    void **a = (void **) arg2;
+    void *r = (void *) arg3;
+    switch (arg1) {
+        case LOREUSER_CT_CheckHealth: {
+            printf("box64 (lorelei): check health\n");
+            break;
+        }
+        case LOREUSER_CT_LoadLibrary: {
+            const char *path = a[0];
+            int flags = (int) (uintptr_t) a[1];
+            void **ret_ref = r;
+            *ret_ref = dlopen(path, flags);
+            return 0;
+        }
+        case LOREUSER_CT_FreeLibrary: {
+            void *handle = a[0];
+            int *ret_ref = r;
+            *ret_ref = dlclose(handle);
+            return 0;
+        }
+        case LOREUSER_CT_GetProcAddress: {
+            void *handle = a[0];
+            const char *name = a[1];
+            void **ret_ref = r;
+            void *sym = dlsym(handle, name);
+            if (!sym) {
+                sym = dlsym(RTLD_DEFAULT, name);
+            }
+            *ret_ref = sym;
+            return 0;
+        }
+        case LOREUSER_CT_GetErrorMessage: {
+            char **ret_ref = r;
+            *ret_ref = dlerror();
+            return 0;
+        }
+        case LOREUSER_CT_GetModulePath: {
+            void *addr = a[0];
+            int is_handle = (int) (intptr_t) a[1];
+            const char **ret_ref = r;
+            if (is_handle) {
+                struct link_map *lm;
+                if (dlinfo(addr, RTLD_DI_LINKMAP, &lm) == 0) {
+                    if (lm->l_name && lm->l_name[0] != '\0') {
+                        *ret_ref = lm->l_name;
+                    } else {
+                        *ret_ref = NULL;
+                    }
+                } else {
+                    *ret_ref = NULL;
+                }
+            } else {
+                Dl_info info;
+                if (dladdr(addr, &info) == 0) {
+                    *ret_ref = NULL;
+                } else {
+                    *ret_ref = info.dli_fname;
+                }
+            }
+            return 0;
+        }
+        case LOREUSER_CT_InvokeHostProc: {
+            // LoreThreadNextCallCount++;
+            // LoreThreadNextCallList[LoreThreadNextCallCount] = (void *) r; // save
+            int convention = (int) (intptr_t) a[0];
+            switch (convention) {
+                case LOREUSER_PC_Function: {
+                    typedef void (*Func)(void *, void *, void *);
+                    Func func = a[1];
+                    void *args = a[2];
+                    void *ret = a[3];
+                    void *metadata = a[4];
+                    LoreLastTick  = rdtsc();
+                    func(args, ret, metadata);
+                    LoreTicks += rdtsc() - LoreLastTick;
+                    break;
+                }
+                // case LOREUSER_PC_ThreadEntry: {
+                //     typedef void *(*Func)(void *);
+                //     Func func = a[1];
+                //     void *args = a[2];
+                //     void **ret_ref = a[3];
+                //     LoreLastTick  = rdtsc();
+                //     *ret_ref = func(args);
+                //     LoreTicks += rdtsc() - LoreLastTick;
+                //     break;
+                // }
+                // case LOREUSER_PC_HostCallback: {
+                //     typedef void (*Func)(void *, void *, void *, void *);
+                //     Func func = a[1];
+                //     void **newArgs = a[2];
+                //     void *ret = a[3];
+                //     void *metadata = a[4];
+                //     LoreLastTick  = rdtsc();
+                //     func(newArgs[0], newArgs[1], ret, metadata);
+                //     LoreTicks += rdtsc() - LoreLastTick;
+                //     break;
+                // }
+                default:
+                    break;
+            }
+            // LoreThreadNextCallCount--;
+            return 0;
+        }
+        default: {
+            if (LoreEmuContext.HandleExtraGuestCall) {
+                LoreEmuContext.HandleExtraGuestCall(arg1, a, r);
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
+
+// Host library may call these functions to interact with guest environment, the guest runtime
+// should finally use `LOREUSER_CT_ResumeHostProc` to return to the host library.
+static void Lore_EmuEntry_ExecuteCallback(void *thunk, void *callback, void *args, void *ret, void *metadata) {
+    typedef void (*CallbackThunk)(void * /*callback*/, void * /*args*/, void * /*ret*/, void * /*metadata*/);
+    LoreTicks += rdtsc() - LoreLastTick;
+    RunFunctionFmt((uintptr_t) thunk, "pppp", callback, args, ret, metadata);
+    LoreLastTick = rdtsc();
+}
+
+static __thread pthread_t LoreLastPthreadId;
+
+static void Lore_EmuEntry_NotifyPThreadCreate(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine) (void *), void *arg, int *ret) {
+    *ret = pthread_create(thread, attr, start_routine, arg);
+    LoreLastPthreadId = *thread;
+}
+
+static void Lore_EmuEntry_NotifyPThreadExit(void *ret) {
+    LoreTicks += rdtsc() - LoreLastTick;
+    pthread_exit(ret);
+    LoreLastTick = rdtsc();
+}
+
+static pthread_t Lore_EmuEntry_GetLastPThreadId(void) {
+    return LoreLastPthreadId;
+}
+
+static void Lore_EmuEntry_NotifyHostLibraryOpen(const char *id) {
+    printf("NotifyHostLibraryOpen: Not implemented.");
+    abort();
+}
+
+void Init_Lorelei() {
+    const char *root = getenv("LORELEI_ROOT");
+    if (!root) {
+        printf("box64 (lorelei): LORELEI_ROOT not defined.\n");
+        return;
+    }
+
+    char host_runtime[PATH_MAX];
+    (void) snprintf(host_runtime, PATH_MAX, "%s/lib/liblorehrt.so", root);
+
+    void *handle = dlopen(host_runtime, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        printf("box64 (lorelei): failed to open host runtime \"%s\".\n", host_runtime);
+        return;
+    }
+    void *s1 = dlsym(handle, "Lore_HandleExtraGuestCall");
+    if (!s1) {
+        printf("box64 (lorelei): failed to get address of Lore_HandleExtraGuestCall\n");
+        dlclose(handle);
+        return;
+    }
+    void *s2 = dlsym(handle, "Lore_HrtGetEmuApis");
+    if (!s2) {
+        printf("box64 (lorelei): failed to get address of Lore_HrtGetEmuApis\n");
+        dlclose(handle);
+        return;
+    }
+
+    LoreEmuContext.LibraryHandle = handle;
+    LoreEmuContext.HandleExtraGuestCall = s1;
+    LoreEmuContext.HrtGetEmuApis = s2;
+
+    struct LoreEmuApis *apis = LoreEmuContext.HrtGetEmuApis();
+    apis->ExecuteCallback = Lore_EmuEntry_ExecuteCallback;
+    apis->GetLastPThreadId = Lore_EmuEntry_GetLastPThreadId;
+    apis->NotifyPThreadCreate = Lore_EmuEntry_NotifyPThreadCreate;
+    apis->NotifyPThreadExit = Lore_EmuEntry_NotifyPThreadExit;
+    apis->NotifyHostLibraryOpen = Lore_EmuEntry_NotifyHostLibraryOpen;
 }

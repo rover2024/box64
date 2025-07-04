@@ -239,6 +239,7 @@ typedef struct box64context_s {
     char*               log_ret;    // is a large string composed of sloces of 128 chars
     int                 current_line;
 
+    path_collection_t   lorelei_ld_paths;
 } box64context_t;
 
 #ifndef USE_CUSTOM_MUTEX

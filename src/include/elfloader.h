@@ -41,6 +41,8 @@ const char* ElfPath(elfheader_t* head);
 void ElfAttachLib(elfheader_t* head, library_t* lib);
 
 // return 0 if OK
+extern int isLoadingEmulatedElf;
+
 int CalcLoadAddr(elfheader_t* head);
 int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin);
 void FreeElfMemory(elfheader_t* head);

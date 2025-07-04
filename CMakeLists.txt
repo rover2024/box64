@@ -289,8 +289,8 @@ else()
     set(BOX64 box64)
 endif()
 
-#set(BOX64_ELF_ADDRESS "0x500062800000")  #random load address...
-set(BOX64_ELF_ADDRESS "0x34800000")  #low address
+set(BOX64_ELF_ADDRESS "0x500062800000")  #random load address...
+# set(BOX64_ELF_ADDRESS "0x34800000")  #low address
 
 if(LD80BITS)
     add_definitions(-DHAVE_LD80BITS)
@@ -642,7 +642,7 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedlibvawayland.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibvax11.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibvdpau.c"
-    "${BOX64_ROOT}/src/wrapped/wrappedlibvorbis.c"
+    # "${BOX64_ROOT}/src/wrapped/wrappedlibvorbis.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibx11.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibx11xcb.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibxau.c"

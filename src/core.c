@@ -287,6 +287,7 @@ static void hookMangoHud()
 
 static void loadPath(path_collection_t *col, const char* defpath, const char* path)
 {
+    printf("LOADPATH: %s\n", path);
     if(path) {
         ParseList(path, col, 1);
     } else {
@@ -480,6 +481,7 @@ void LoadLDPath(box64context_t *context)
     else
     #endif
     loadPath(&context->box64_ld_lib, ".:lib:lib64:x86_64:bin64:libs64", BOX64ENV(ld_library_path));
+    loadPath(&context->lorelei_ld_paths, "", getenv("LORELEI_LD_LIBRARY_PATH"));
     #ifndef TERMUX
     if(box64_is32bits) {
         #ifdef BOX32
@@ -1124,6 +1126,10 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
             ++p2;
         }
     }
+
+    extern void Init_Lorelei();
+    Init_Lorelei();
+
     // check if file exist
     if(!my_context->argv[0] || !FileExist(my_context->argv[0], IS_FILE)) {
         printf_log(LOG_NONE, "Error: File is not found. (%s)\n", my_context->argv[0]);
@@ -1132,7 +1138,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         FreeCollection(&ld_preload);
         return -1;
     }
-    if(!FileExist(my_context->argv[0], IS_FILE|IS_EXECUTABLE)) {
+    if(!FileExist(my_context->argv[0], IS_FILE)) {
         printf_log(LOG_NONE, "Error: %s is not an executable file.\n", my_context->argv[0]);
         free_contextargv();
         FreeBox64Context(&my_context);

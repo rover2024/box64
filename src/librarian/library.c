@@ -303,6 +303,8 @@ static void initWrappedLib(library_t *lib, box64context_t* context) {
     }
 }
 
+int isLoadingEmulatedElf = 0;
+
 static int loadEmulatedLib(const char* libname, library_t *lib, box64context_t* context, elfheader_t* verneeded)
 {
     if(FileExist(libname, IS_FILE))
@@ -324,12 +326,15 @@ static int loadEmulatedLib(const char* libname, library_t *lib, box64context_t* 
             FreeElfHeader(&elf_header);
             return 0;
         }
+        isLoadingEmulatedElf = 1;
         // allocate and load elf
         if(AllocLoadElfMemory(context, elf_header, 0)) {
+            isLoadingEmulatedElf = 0;
             printf_log(LOG_NONE, "Error: loading for elf %s\n", libname);
             FreeElfHeader(&elf_header);
             return 0;
         }
+        isLoadingEmulatedElf = 0;
         // can close the file now
         if(verneeded && !isElfHasNeededVer(elf_header, lib->name, verneeded)) {
             // incompatible, discard and continue the search
@@ -401,6 +406,15 @@ static void initEmulatedLib(const char* path, library_t *lib, box64context_t* co
         if(loadEmulatedLib(libname, lib, context, verneeded))
             return;
     if(!strchr(path, '/'))
+    {
+        for(int i=0; i<context->lorelei_ld_paths.size; ++i)
+        {
+            strcpy(libname, context->lorelei_ld_paths.paths[i]);
+            strcat(libname, path);
+            if(box64_is32bits?FileIsX86ELF(libname):FileIsX64ELF(libname))
+                if(loadEmulatedLib(libname, lib, context, verneeded))
+                    return;     
+        }
         for(int i=0; i<context->box64_ld_lib.size; ++i)
         {
             strcpy(libname, context->box64_ld_lib.paths[i]);
@@ -416,6 +430,7 @@ static void initEmulatedLib(const char* path, library_t *lib, box64context_t* co
                 if(loadEmulatedLib(libname, lib, context, verneeded))
                     return;            
         }
+    }
 }
 
 static void initDummyLib(library_t *lib)

@@ -2498,11 +2498,14 @@ void* find47bitBlockNearHint(void* hint, size_t size, uintptr_t mask)
     }
     return NULL;
 }
+
+extern int isLoadingEmulatedElf;
+
 void* find47bitBlockElf(size_t size, int mainbin, uintptr_t mask)
 {
-    static void* startingpoint = NULL;
+    void* startingpoint = NULL;
     if(!startingpoint) {
-        startingpoint = (void*)(have48bits?0x7fff00000000LL:0x3f00000000LL);
+        startingpoint = (void*)(have48bits?(isLoadingEmulatedElf ? 0x4f0000000000LL : 0x7fff00000000LL):0x3f00000000LL);
     }
     void* mainaddr = (void*)0x100000000LL;
     void* ret = find47bitBlockNearHint(mainbin?mainaddr:startingpoint, size, mask);

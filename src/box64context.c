@@ -279,6 +279,7 @@ void FreeBox64Context(box64context_t** context)
     FreeCollection(&ctx->box64_path);
     FreeCollection(&ctx->box64_ld_lib);
     FreeCollection(&ctx->box64_emulated_libs);
+    FreeCollection(&ctx->lorelei_ld_paths);
     // stop trace now
     if(ctx->dec)
         DeleteX64TraceDecoder(&ctx->dec);
